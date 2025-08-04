@@ -371,79 +371,17 @@ again:
 	return (p);
 }
 
+/*
+ * sched_choosecpu_main - unified core of the CPU selection logic
+ */
 struct cpu_info *
-sched_choosecpu_fork(struct proc *parent, int flags)
+sched_choosecpu_main(struct proc *p)
 {
-#ifdef MULTIPROCESSOR
-	struct cpu_info *choice = NULL;
-	int run, best_run = INT_MAX;
-	struct cpu_info *ci;
-	struct cpuset set;
-
-#if 0
-	/*
-	 * XXX
-	 * Don't do this until we have a painless way to move the cpu in exec.
-	 * Preferably when nuking the old pmap and getting a new one on a
-	 * new cpu.
-	 */
-	/*
-	 * PPWAIT forks are simple. We know that the parent will not
-	 * run until we exec and choose another cpu, so we just steal its
-	 * cpu.
-	 */
-	if (flags & FORK_PPWAIT)
-		return (parent->p_cpu);
-#endif
-
-	/*
-	 * Look at all cpus that are currently idle and have nothing queued.
-	 * If there are none, pick the one with least queued procs first,
-	 * then the one with lowest load average.
-	 */
-	cpuset_complement(&set, &sched_queued_cpus, &sched_idle_cpus);
-	cpuset_intersection(&set, &set, &sched_all_cpus);
-	if (cpuset_first(&set) == NULL)
-		cpuset_copy(&set, &sched_all_cpus);
-
-	while ((ci = cpuset_first(&set)) != NULL) {
-		cpuset_del(&set, ci);
-
-		run = ci->ci_schedstate.spc_nrun;
-
-		if (choice == NULL || run < best_run) {
-			choice = ci;
-			best_run = run;
-		}
-	}
-
-	if (choice != NULL)
-		return (choice);
-#endif
-	return (curcpu());
-}
-
-struct cpu_info *
-sched_choosecpu(struct proc *p)
-{
-#ifdef MULTIPROCESSOR
 	struct cpu_info *choice = NULL;
 	int last_cost = INT_MAX;
 	struct cpu_info *ci;
 	struct cpuset set;
-
-	/*
-	 * If pegged, p->p_cpu is fixed and still valid -> return it.
-	 * Otherwise p->p_cpu holds the last owner,
-	 * so if that CPU is still online/active, use it.
-	 */
-	if (p->p_cpu &&
-		((p->p_flag & P_CPUPEG) ||
-		(cpuset_isset(&sched_all_cpus, p->p_cpu) &&
-		!(p->p_cpu->ci_schedstate.spc_schedflags & SPCF_SHOULDHALT))))
-		return (p->p_cpu);
-
-	sched_choose++;
+	
 
 	/*
 	 * Look at all cpus that are currently idle and have nothing queued.
@@ -486,8 +424,55 @@ sched_choosecpu(struct proc *p)
 	else
 		sched_nomigrations++;
 
-	if (choice != NULL)
-		return (choice);
+	return (choice);
+
+}
+
+struct cpu_info *
+sched_choosecpu_fork(struct proc *parent, int flags)
+{
+#ifdef MULTIPROCESSOR
+#if 0
+	/*
+	 * XXX
+	 * Don't do this until we have a painless way to move the cpu in exec.
+	 * Preferably when nuking the old pmap and getting a new one on a
+	 * new cpu.
+	 */
+	/*
+	 * PPWAIT forks are simple. We know that the parent will not
+	 * run until we exec and choose another cpu, so we just steal its
+	 * cpu.
+	 */
+	if (flags & FORK_PPWAIT)
+		return (parent->p_cpu);
+#endif
+
+return (sched_choosecpu_main(parent));
+
+#endif
+	return (curcpu());
+}
+
+struct cpu_info *
+sched_choosecpu(struct proc *p)
+{
+#ifdef MULTIPROCESSOR
+
+	/*
+	 * If pegged, p->p_cpu is fixed and still valid -> return it.
+	 * Otherwise p->p_cpu holds the last owner,
+	 * so if that CPU is still online/active, use it.
+	 */
+	if (p->p_cpu &&
+		((p->p_flag & P_CPUPEG) ||
+		(cpuset_isset(&sched_all_cpus, p->p_cpu) &&
+		!(p->p_cpu->ci_schedstate.spc_schedflags & SPCF_SHOULDHALT))))
+		return (p->p_cpu);
+
+	sched_choose++;
+
+return (sched_choosecpu_main(p));
 #endif
 	return (curcpu());
 }
