@@ -31,6 +31,7 @@
 #include <uvm/uvm_extern.h>
 
 void sched_kthreads_create(void *);
+void init_static_cpu_prefs(void);
 
 int sched_proc_to_cpu_cost(struct cpu_info *ci, struct proc *p);
 struct proc *sched_steal_proc(struct cpu_info *);
@@ -56,6 +57,15 @@ uint64_t sched_wasidle;		/* Times we came out of idle */
 
 /* Only schedule processes on sibling CPU threads when true. */
 int sched_smt;
+
+struct cpu_info *cpuset_infos[MAXCPUS];
+static int cpu_costs[MAXCPUS][MAXCPUS];
+
+struct cpu_pref {
+    struct cpu_info *cprefs[MAXCPUS];
+    int              ncpus;
+};
+static struct cpu_pref cpu_prefs[MAXCPUS];
 
 /*
  * A few notes about cpu_switchto that is implemented in MD code.
@@ -653,6 +663,7 @@ sched_start_secondary_cpus(void)
 			continue;
 #endif
 		cpuset_add(&sched_all_cpus, ci);
+	init_static_cpu_prefs();
 	}
 }
 
@@ -684,6 +695,58 @@ sched_stop_secondary_cpus(void)
 			    (spc->spc_schedflags & SPCF_HALTED) == 0);
 		}
 	}
+}
+
+void
+init_static_cpu_prefs(void)
+{
+    /* cluster sizes and their relative importance */
+    static const int tiers[]   = { 2,   4,   8,   16,   64 };
+    static const int weights[] = {1000, 500, 100,  10,    1  };
+    static const int ntiers    = sizeof(tiers)/sizeof(*tiers);
+
+    /* 1) fill cpu_costs[u][v] for all 0..MAXCPUS-1 */
+    for (int u = 0; u < MAXCPUS; u++) {
+        for (int v = 0; v < MAXCPUS; v++) {
+            int cost = 0;
+            for (int t = 0; t < ntiers; t++) {
+                int du = u / tiers[t];
+                int dv = v / tiers[t];
+                cost += weights[t] * (du > dv ? du - dv : dv - du);
+            }
+            cpu_costs[u][v] = cost;
+        }
+    }
+
+    /* 2) for each u, build & insertion‐sort its pref list */
+    for (int u = 0; u < MAXCPUS; u++) {
+        struct cpu_pref *pf = &cpu_prefs[u];
+        pf->ncpus = 0;
+
+        /* collect every defined CPU pointer (cpuset_infos[v]!=NULL) */
+        for (int v = 0; v < MAXCPUS; v++) {
+            if (cpuset_infos[v] != NULL)
+                pf->cprefs[pf->ncpus++] = cpuset_infos[v];
+        }
+
+        /* stable insertion sort by cpu_costs[u][v] */
+        for (int i = 1; i < pf->ncpus; i++) {
+            struct cpu_info *tmp = pf->cprefs[i];
+            int tv = CPU_INFO_UNIT(tmp);
+            int cost_tmp = cpu_costs[u][tv];
+
+            int j = i - 1;
+            while (j >= 0) {
+                int vj     = CPU_INFO_UNIT(pf->cprefs[j]);
+                int cost_j = cpu_costs[u][vj];
+                if (cost_j <= cost_tmp)
+                    break;
+                pf->cprefs[j+1] = pf->cprefs[j];
+                j--;
+            }
+            pf->cprefs[j+1] = tmp;
+        }
+    }
 }
 
 struct sched_barrier_state {
@@ -740,7 +803,6 @@ sched_barrier(struct cpu_info *ci)
 /*
  * Functions to manipulate cpu sets.
  */
-struct cpu_info *cpuset_infos[MAXCPUS];
 
 void
 cpuset_init_cpu(struct cpu_info *ci)
