@@ -433,9 +433,14 @@ sched_choosecpu(struct proc *p)
 	struct cpuset set;
 
 	/*
-	 * If pegged to a cpu, don't allow it to move.
+	 * If pegged, p->p_cpu is fixed and still valid -> return it.
+	 * Otherwise p->p_cpu holds the last owner,
+	 * so if that CPU is still online/active, use it.
 	 */
-	if (p->p_flag & P_CPUPEG)
+	if (p->p_cpu &&
+		((p->p_flag & P_CPUPEG) ||
+		(cpuset_isset(&sched_all_cpus, p->p_cpu) &&
+		!(p->p_cpu->ci_schedstate.spc_schedflags & SPCF_SHOULDHALT))))
 		return (p->p_cpu);
 
 	sched_choose++;
